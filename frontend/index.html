@@ -7,7 +7,7 @@
 <meta name="theme-color" content="#03030a">
 <title>NeuroFit — Smart Fitness Tracker</title>
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=Exo+2:wght@300;400;500;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.js"></script>
 <style>
 :root {
@@ -887,43 +887,57 @@ option{background:#0d0d28;}
     </div>
   </div>
 </div>
-<script>
-const API_BASE = "https://nt-production.up.railway.app";
 
-const _fetch = window.fetch.bind(window);
-window.fetch = (input, init = {}) => {
-  let url = typeof input === "string" ? input : input.url;
-
-  if (url.startsWith("/")) {
-    url = API_BASE + url;
-  }
-
-  return _fetch(url, init);
-};
-</script>
 
 
 <script>
 /* ══════════════════════════════════════════
-   CONFIG — DO NOT CHANGE
+   CONFIG
    ══════════════════════════════════════════ */
-const SUPA_URL = 'https://pliyvcazofacadrdyywh.supabase.co';
-const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBsaXl2Y2F6b2ZhY2FkcmR5eXdoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2OTgyOTUsImV4cCI6MjA5MDI3NDI5NX0.LBbeW8B7ujHy3nmhK_yulgqwUU09twIb-OfpnxehBHk';
+const API_BASE = 'https://nt-production.up.railway.app';
 
-let db, usr, wChart=null;
+let usr, wChart=null;
+
+/* ══════════════════════════════════════════
+   API HELPERS
+   ══════════════════════════════════════════ */
+async function apiPost(path, body){
+  const res = await fetch(API_BASE + path, {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: typeof body === 'string' ? body : JSON.stringify(body)
+  });
+  return res.text();
+}
+
+async function apiGet(path){
+  const res = await fetch(API_BASE + path);
+  return res.text();
+}
+
+function parseLines(raw){
+  return raw.trim().split('\n').filter(l=>l.trim());
+}
+
+function parseJSON(raw){
+  try{ return JSON.parse(raw); }catch(e){ return null; }
+}
 
 /* ══════════════════════════════════════════
    INIT & BOOT
    ══════════════════════════════════════════ */
 async function init(){
-  try{ db = supabase.createClient(SUPA_URL, SUPA_KEY); }catch(e){ console.warn(e); }
-  const uid = localStorage.getItem('nf_uid');
-  if(uid && db){
-    try{
-      const {data} = await db.from('fitness_users').select('*').eq('id',uid).single();
-      if(data){ usr=data; boot(); return; }
-    }catch(e){}
-  }
+  try{
+    const raw = await apiGet('/getProfile');
+    const lines = parseLines(raw);
+    if(lines.length){
+      // Profile lines format: JSON stored per line, take latest
+      for(let i=lines.length-1;i>=0;i--){
+        const p=parseJSON(lines[i]);
+        if(p&&p.name){ usr=p; boot(); return; }
+      }
+    }
+  }catch(e){ console.warn('Profile load failed',e); }
   document.getElementById('obModal').style.display='flex';
 }
 
@@ -952,11 +966,10 @@ async function saveProfile(){
   const btn=document.getElementById('obBtn');
   btn.innerHTML='<div class="spin"></div> Initializing…'; btn.disabled=true;
   try{
-    const {data,error}=await db.from('fitness_users')
-      .insert({name,age,weight_kg:wt,height_cm:ht,gender:gen,fitness_goal:goal,activity_level:act})
-      .select().single();
-    if(error)throw error;
-    usr=data; localStorage.setItem('nf_uid',data.id); boot();
+    const profile={name,age,weight_kg:wt,height_cm:ht,gender:gen,fitness_goal:goal,activity_level:act,id:Date.now().toString()};
+    await apiPost('/saveProfile', JSON.stringify(profile));
+    usr=profile;
+    boot();
   }catch(e){toast('Error: '+e.message,'error');btn.innerHTML='Create My Profile →';btn.disabled=false;}
 }
 
@@ -1061,17 +1074,22 @@ function updateDash(logs){
 async function saveWorkout(){
   if(!usr||!curW)return;
   try{
-    await db.from('workout_plans').insert({user_id:usr.id,title:`${curW.lvl} ${curW.type} — ${curW.dur}`,plan_data:curW});
+    const entry={user_id:usr.id,title:`${curW.lvl} ${curW.type} — ${curW.dur}`,plan_data:curW,created_at:new Date().toISOString()};
+    await apiPost('/addWorkout', JSON.stringify(entry));
     loadW(); toast('Workout plan saved! ✓','success');
   }catch(e){toast(e.message,'error');}
 }
 
 async function loadW(){
-  if(!usr||!db)return;
-  const{data}=await db.from('workout_plans').select('*').eq('user_id',usr.id).order('created_at',{ascending:false}).limit(6);
+  if(!usr)return;
   const el=document.getElementById('savedW');
-  if(!data?.length){el.innerHTML='<div class="empty"><div class="empty-ico">🏋️</div><div class="empty-txt">No saved plans yet.</div></div>';return;}
-  el.innerHTML=data.map(w=>`<div class="saved-row"><div class="saved-ico">🏋️</div><div class="saved-info"><div class="saved-ttl">${w.title}</div><div class="saved-meta">${new Date(w.created_at).toLocaleDateString()}</div></div><span class="badge b-pri">Saved</span></div>`).join('');
+  try{
+    const raw=await apiGet('/getWorkout');
+    const lines=parseLines(raw);
+    if(!lines.length){el.innerHTML='<div class="empty"><div class="empty-ico">🏋️</div><div class="empty-txt">No saved plans yet.</div></div>';return;}
+    const entries=lines.map(l=>parseJSON(l)).filter(Boolean).reverse().slice(0,6);
+    el.innerHTML=entries.map(w=>`<div class="saved-row"><div class="saved-ico">🏋️</div><div class="saved-info"><div class="saved-ttl">${w.title||'Workout Plan'}</div><div class="saved-meta">${w.created_at?new Date(w.created_at).toLocaleDateString():''}</div></div><span class="badge b-pri">Saved</span></div>`).join('');
+  }catch(e){el.innerHTML='<div class="empty"><div class="empty-ico">🏋️</div><div class="empty-txt">No saved plans yet.</div></div>';}
 }
 
 /* ══════════════════════════════════════════
@@ -1079,11 +1097,15 @@ async function loadW(){
    ══════════════════════════════════════════ */
 
 async function loadD(){
-  if(!usr||!db)return;
-  const{data}=await db.from('diet_plans').select('*').eq('user_id',usr.id).order('created_at',{ascending:false}).limit(6);
+  if(!usr)return;
   const el=document.getElementById('savedD');
-  if(!data?.length){el.innerHTML='<div class="empty"><div class="empty-ico">🥗</div><div class="empty-txt">No saved plans yet.</div></div>';return;}
-  el.innerHTML=data.map(d=>`<div class="saved-row"><div class="saved-ico">🥗</div><div class="saved-info"><div class="saved-ttl">${d.title}</div><div class="saved-meta">${d.daily_calories} kcal · ${new Date(d.created_at).toLocaleDateString()}</div></div><span class="badge b-sec">Saved</span></div>`).join('');
+  try{
+    const raw=await apiGet('/getFood');
+    const lines=parseLines(raw);
+    if(!lines.length){el.innerHTML='<div class="empty"><div class="empty-ico">🥗</div><div class="empty-txt">No saved plans yet.</div></div>';return;}
+    const entries=lines.map(l=>parseJSON(l)).filter(Boolean).reverse().slice(0,6);
+    el.innerHTML=entries.map(d=>`<div class="saved-row"><div class="saved-ico">🥗</div><div class="saved-info"><div class="saved-ttl">${d.title||d.name||'Meal Entry'}</div><div class="saved-meta">${d.calories?d.calories+' kcal · ':''} ${d.created_at?new Date(d.created_at).toLocaleDateString():''}</div></div><span class="badge b-sec">Saved</span></div>`).join('');
+  }catch(e){el.innerHTML='<div class="empty"><div class="empty-ico">🥗</div><div class="empty-txt">No saved plans yet.</div></div>';}
 }
 
 /* ══════════════════════════════════════════
@@ -1091,22 +1113,27 @@ async function loadD(){
    ══════════════════════════════════════════ */
 async function saveMetrics(){
   if(!usr)return;
-  const entry={user_id:usr.id,chest:parseFloat(document.getElementById('m_chest').value)||null,waist:parseFloat(document.getElementById('m_waist').value)||null,hips:parseFloat(document.getElementById('m_hips').value)||null,arms:parseFloat(document.getElementById('m_arms').value)||null,thighs:parseFloat(document.getElementById('m_thighs').value)||null,calves:parseFloat(document.getElementById('m_calves').value)||null};
+  const entry={user_id:usr.id,chest:parseFloat(document.getElementById('m_chest').value)||null,waist:parseFloat(document.getElementById('m_waist').value)||null,hips:parseFloat(document.getElementById('m_hips').value)||null,arms:parseFloat(document.getElementById('m_arms').value)||null,thighs:parseFloat(document.getElementById('m_thighs').value)||null,calves:parseFloat(document.getElementById('m_calves').value)||null,created_at:new Date().toISOString()};
   try{
-    await db.from('body_metrics').insert(entry);
+    await apiPost('/addProgress', JSON.stringify({...entry, type:'body_metrics'}));
     ['m_chest','m_waist','m_hips','m_arms','m_thighs','m_calves'].forEach(id=>document.getElementById(id).value='');
     loadMetrics(); toast('Measurements saved! ✓','success');
   }catch(e){toast(e.message,'error');}
 }
 
 async function loadMetrics(){
-  if(!usr||!db)return;
-  const{data}=await db.from('body_metrics').select('*').eq('user_id',usr.id).order('created_at',{ascending:false}).limit(1);
+  if(!usr)return;
   const el=document.getElementById('latestMetrics');
-  if(!data?.length){el.innerHTML='<div class="empty"><div class="empty-ico">📏</div><div class="empty-txt">No measurements yet.</div></div>';return;}
-  const m=data[0];
-  const rows=[['Chest',m.chest],['Waist',m.waist],['Hips',m.hips],['Arms',m.arms],['Thighs',m.thighs],['Calves',m.calves]];
-  el.innerHTML=rows.filter(r=>r[1]).map(r=>`<div class="metric-row"><span class="metric-lbl">${r[0]}</span><span class="metric-val">${r[1]} <span style="font-size:12px;color:var(--txt2);font-family:'Exo 2'">cm</span></span></div>`).join('');
+  try{
+    const raw=await apiGet('/getProgress');
+    const lines=parseLines(raw);
+    const metrics=lines.map(l=>parseJSON(l)).filter(p=>p&&p.type==='body_metrics'&&p.user_id===usr.id).reverse();
+    if(!metrics.length){el.innerHTML='<div class="empty"><div class="empty-ico">📏</div><div class="empty-txt">No measurements yet.</div></div>';return;}
+    const m=metrics[0];
+    const rows=[['Chest',m.chest],['Waist',m.waist],['Hips',m.hips],['Arms',m.arms],['Thighs',m.thighs],['Calves',m.calves]];
+    el.innerHTML=rows.filter(r=>r[1]).map(r=>`<div class="metric-row"><span class="metric-lbl">${r[0]}</span><span class="metric-val">${r[1]} <span style="font-size:12px;color:var(--txt2);font-family:'Exo 2'">cm</span></span></div>`).join('');
+    if(!el.innerHTML)el.innerHTML='<div class="empty"><div class="empty-ico">📏</div><div class="empty-txt">No measurements yet.</div></div>';
+  }catch(e){el.innerHTML='<div class="empty"><div class="empty-ico">📏</div><div class="empty-txt">No measurements yet.</div></div>';}
 }
 
 /* ══════════════════════════════════════════
@@ -1115,10 +1142,10 @@ async function loadMetrics(){
 async function logProg(){
   if(!usr)return;
   const wt=parseFloat(document.getElementById('l_wt').value)||null;
-  const entry={user_id:usr.id,weight_kg:wt,calories_consumed:parseInt(document.getElementById('l_cal').value)||null,steps:parseInt(document.getElementById('l_steps').value)||null,water_ml:parseInt(document.getElementById('l_water').value)||null,sleep_hours:parseFloat(document.getElementById('l_sleep').value)||null,workout_completed:document.getElementById('l_workout').value==='true',notes:document.getElementById('l_notes').value||null};
+  const entry={user_id:usr.id,type:'progress_log',weight_kg:wt,calories_consumed:parseInt(document.getElementById('l_cal').value)||null,steps:parseInt(document.getElementById('l_steps').value)||null,water_ml:parseInt(document.getElementById('l_water').value)||null,sleep_hours:parseFloat(document.getElementById('l_sleep').value)||null,workout_completed:document.getElementById('l_workout').value==='true',notes:document.getElementById('l_notes').value||null,created_at:new Date().toISOString()};
   try{
-    await db.from('progress_logs').insert(entry);
-    if(wt){await db.from('fitness_users').update({weight_kg:wt,updated_at:new Date().toISOString()}).eq('id',usr.id);usr.weight_kg=wt;}
+    await apiPost('/addProgress', JSON.stringify(entry));
+    if(wt){ usr.weight_kg=wt; }
     ['l_wt','l_cal','l_steps','l_water','l_sleep','l_notes'].forEach(id=>document.getElementById(id).value='');
     document.getElementById('l_workout').value='false';
     await loadProg(); toast('Progress logged! 🎉','success');
@@ -1126,41 +1153,45 @@ async function logProg(){
 }
 
 async function loadProg(){
-  if(!usr||!db)return;
-  const{data}=await db.from('progress_logs').select('*').eq('user_id',usr.id).order('created_at',{ascending:false}).limit(30);
-  updateDash(data);
-  if(!data?.length)return;
-  const now=new Date();
-  const thisMonth=data.filter(d=>{const dt=new Date(d.created_at);return dt.getMonth()===now.getMonth()&&dt.getFullYear()===now.getFullYear();});
-  document.getElementById('d_wkts').textContent=thisMonth.filter(d=>d.workout_completed).length;
-  const fmt=d=>new Date(d).toLocaleDateString('en',{month:'short',day:'numeric'});
-  const recentHtml=data.slice(0,5).map(e=>`
-    <div class="log-row">
-      <div class="log-dt">${fmt(e.created_at)}</div>
-      <div class="log-wt">${e.weight_kg?e.weight_kg+'kg':'—'}</div>
-      <div class="log-bgs">
-        ${e.workout_completed?'<span class="badge b-grn">Workout ✓</span>':''}
-        ${e.steps?`<span class="badge b-sec">${e.steps.toLocaleString()} steps</span>`:''}
-        ${e.calories_consumed?`<span class="badge b-acc">${e.calories_consumed} kcal</span>`:''}
-        ${e.sleep_hours?`<span class="badge b-pri">${e.sleep_hours}h sleep</span>`:''}
-      </div>
-    </div>`).join('');
-  document.getElementById('recentAct').innerHTML=recentHtml||'<div class="empty"><div class="empty-ico">📋</div><div class="empty-txt">No logs yet.</div></div>';
-  document.getElementById('progHist').innerHTML=data.map(e=>`
-    <div class="log-row">
-      <div class="log-dt">${fmt(e.created_at)}</div>
-      <div class="log-wt">${e.weight_kg?e.weight_kg+'kg':'—'}</div>
-      <div class="log-bgs">
-        ${e.workout_completed?'<span class="badge b-grn">Workout ✓</span>':''}
-        ${e.calories_consumed?`<span class="badge b-acc">${e.calories_consumed} kcal</span>`:''}
-        ${e.steps?`<span class="badge b-sec">${e.steps.toLocaleString()} steps</span>`:''}
-        ${e.water_ml?`<span class="badge b-sec">${(e.water_ml/1000).toFixed(1)}L water</span>`:''}
-        ${e.sleep_hours?`<span class="badge b-pri">${e.sleep_hours}h sleep</span>`:''}
-      </div>
-      ${e.notes?`<div style="font-size:11px;color:var(--txt2);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${e.notes}</div>`:''}
-    </div>`).join('');
-  const wData=data.filter(d=>d.weight_kg).reverse().slice(-14);
-  if(wData.length>1)drawChart(wData.map(d=>fmt(d.created_at)),wData.map(d=>d.weight_kg));
+  if(!usr)return;
+  try{
+    const raw=await apiGet('/getProgress');
+    const lines=parseLines(raw);
+    const data=lines.map(l=>parseJSON(l)).filter(p=>p&&p.type==='progress_log'&&p.user_id===usr.id).reverse().slice(0,30);
+    updateDash(data);
+    if(!data.length)return;
+    const now=new Date();
+    const thisMonth=data.filter(d=>{const dt=new Date(d.created_at);return dt.getMonth()===now.getMonth()&&dt.getFullYear()===now.getFullYear();});
+    document.getElementById('d_wkts').textContent=thisMonth.filter(d=>d.workout_completed).length;
+    const fmt=d=>new Date(d).toLocaleDateString('en',{month:'short',day:'numeric'});
+    const recentHtml=data.slice(0,5).map(e=>`
+      <div class="log-row">
+        <div class="log-dt">${fmt(e.created_at)}</div>
+        <div class="log-wt">${e.weight_kg?e.weight_kg+'kg':'—'}</div>
+        <div class="log-bgs">
+          ${e.workout_completed?'<span class="badge b-grn">Workout ✓</span>':''}
+          ${e.steps?`<span class="badge b-sec">${e.steps.toLocaleString()} steps</span>`:''}
+          ${e.calories_consumed?`<span class="badge b-acc">${e.calories_consumed} kcal</span>`:''}
+          ${e.sleep_hours?`<span class="badge b-pri">${e.sleep_hours}h sleep</span>`:''}
+        </div>
+      </div>`).join('');
+    document.getElementById('recentAct').innerHTML=recentHtml||'<div class="empty"><div class="empty-ico">📋</div><div class="empty-txt">No logs yet.</div></div>';
+    document.getElementById('progHist').innerHTML=data.map(e=>`
+      <div class="log-row">
+        <div class="log-dt">${fmt(e.created_at)}</div>
+        <div class="log-wt">${e.weight_kg?e.weight_kg+'kg':'—'}</div>
+        <div class="log-bgs">
+          ${e.workout_completed?'<span class="badge b-grn">Workout ✓</span>':''}
+          ${e.calories_consumed?`<span class="badge b-acc">${e.calories_consumed} kcal</span>`:''}
+          ${e.steps?`<span class="badge b-sec">${e.steps.toLocaleString()} steps</span>`:''}
+          ${e.water_ml?`<span class="badge b-sec">${(e.water_ml/1000).toFixed(1)}L water</span>`:''}
+          ${e.sleep_hours?`<span class="badge b-pri">${e.sleep_hours}h sleep</span>`:''}
+        </div>
+        ${e.notes?`<div style="font-size:11px;color:var(--txt2);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${e.notes}</div>`:''}
+      </div>`).join('');
+    const wData=data.filter(d=>d.weight_kg).reverse().slice(-14);
+    if(wData.length>1)drawChart(wData.map(d=>fmt(d.created_at)),wData.map(d=>d.weight_kg));
+  }catch(e){ console.warn('loadProg error',e); }
 }
 
 function drawChart(labels,data2){
@@ -1173,22 +1204,24 @@ function drawChart(labels,data2){
    ACHIEVEMENTS
    ══════════════════════════════════════════ */
 async function checkAch(){
-  if(!usr||!db)return;
-  const{data:logs}=await db.from('progress_logs').select('*').eq('user_id',usr.id);
-  const{data:workouts}=await db.from('workout_plans').select('*').eq('user_id',usr.id);
-  const cards=document.querySelectorAll('.ach-card');
-  const unlock=(i)=>{if(cards[i]){cards[i].classList.remove('locked');cards[i].classList.add('unlocked');}};
-  if(workouts?.length>=1)unlock(0);
-  if(logs?.filter(l=>l.water_ml).length>=7)unlock(1);
-  if(logs?.filter(l=>l.calories_consumed).length>=5)unlock(2);
-  if(logs?.length>=14)unlock(3);
-  if(workouts?.length>=10)unlock(4);
-  if(neuralScore(usr,logs)>=80)unlock(5);
-  if(logs?.length>=7)unlock(6);
-  // Habit Master check
-  const todayKey='habits_'+getTodayKey();
-  const todayHabits=JSON.parse(localStorage.getItem(todayKey)||'[]');
-  if(todayHabits.length>=6)unlock(7);
+  if(!usr)return;
+  try{
+    const [rawProg, rawWkt] = await Promise.all([apiGet('/getProgress'), apiGet('/getWorkout')]);
+    const logs = parseLines(rawProg).map(l=>parseJSON(l)).filter(p=>p&&p.type==='progress_log'&&p.user_id===usr.id);
+    const workouts = parseLines(rawWkt).map(l=>parseJSON(l)).filter(Boolean);
+    const cards=document.querySelectorAll('.ach-card');
+    const unlock=(i)=>{if(cards[i]){cards[i].classList.remove('locked');cards[i].classList.add('unlocked');}};
+    if(workouts.length>=1)unlock(0);
+    if(logs.filter(l=>l.water_ml).length>=7)unlock(1);
+    if(logs.filter(l=>l.calories_consumed).length>=5)unlock(2);
+    if(logs.length>=14)unlock(3);
+    if(workouts.length>=10)unlock(4);
+    if(neuralScore(usr,logs)>=80)unlock(5);
+    if(logs.length>=7)unlock(6);
+    const todayKey='habits_'+getTodayKey();
+    const todayHabits=JSON.parse(localStorage.getItem(todayKey)||'[]');
+    if(todayHabits.length>=6)unlock(7);
+  }catch(e){ console.warn('checkAch error',e); }
 }
 
 /* ══════════════════════════════════════════
@@ -1233,7 +1266,6 @@ function logout(){document.getElementById('confirmModal').classList.add('show');
 function closeConfirm(){document.getElementById('confirmModal').classList.remove('show');}
 function doLogout(){
   closeConfirm();
-  localStorage.removeItem('nf_uid');
   usr=null; wChart=null;
   const sb=document.getElementById('sidebarEl');
   sb.style.visibility='hidden'; sb.style.pointerEvents='none';
